@@ -11,7 +11,7 @@ int main(int argc, char **argv){
 
     gmsh::option::setNumber("Mesh.MeshSizeMax", 1);
     
-    gmsh::model::mesh::generate(3);
+    gmsh::model::mesh::generate(2);
 
     gmsh::write("torus.msh");
 
