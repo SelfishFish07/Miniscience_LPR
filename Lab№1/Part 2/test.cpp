@@ -10,7 +10,7 @@ int main(int argc, char **argv){
     gmsh::merge("../chillguy1.stl");
 
     std::vector<std::pair<int, int> > s;
-    gmsh::model::getEntities(s, c:\Users\Тася\Downloads\chillguy1.stl2);
+    gmsh::model::getEntities(s, 2);
     double angle = 70; 
     gmsh::model::mesh::classifySurfaces(angle * M_PI / 180., true, true);
     gmsh::model::mesh::createGeometry();
