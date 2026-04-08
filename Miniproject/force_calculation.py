@@ -1,13 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 from parameters import Acousticparameters
 from propagator import  ASMPropagator
 from domain import generate_grids, create_source_amplitude
 from scipy.special import spherical_jn, spherical_yn, sph_harm_y
+from scipy.interpolate import RegularGridInterpolator
 
 # Reference: Sapozhnikov, O., et al. "Radiation force of an arbitrary acoustic beam on an elastic sphere in a fluid.", J. Acoust. Soc. Am. (2013)
 
-def calculate_cn_array(n_max: int, a: float, params: Acousticparameters):
+def calculate_cn_array(n_max: int, a, params: Acousticparameters):
     n = np.arange(n_max + 2)
     
     rho_medium = params.rho_medium
@@ -54,11 +56,11 @@ def calculate_cn_array(n_max: int, a: float, params: Acousticparameters):
     
     return c_n
 
-def calculate_psi_n_array(c_n: np.ndarray):
+def calculate_psi_n_array(c_n):
     #Eq. (49)
     return (1 + 2 * c_n[:-1]) * (1 + 2 * np.conjugate(c_n[1:])) - 1
 
-def calculate_Hnm(field_z: np.ndarray, params: Acousticparameters, Kx: np.ndarray, Ky: np.ndarray, n_max: int):
+def calculate_Hnm(field_z, params: Acousticparameters, Kx, Ky, n_max: int):
     k = params.k_medium
 
     mask =  Kx**2 + Ky**2 <= k**2
@@ -78,7 +80,7 @@ def calculate_Hnm(field_z: np.ndarray, params: Acousticparameters, Kx: np.ndarra
             H_dict[(n, m)] = (2 * np.pi)**2 * np.fft.ifft2(spectrum * np.conjugate(Ynm) * mask)
     return H_dict
 
-def calculate_forces(a: float, field_z: np.ndarray, Kx: np.ndarray, Ky: np.ndarray, params: Acousticparameters, n_max: int = 4, cropped: bool = False, **kwargs):
+def calculate_forces(a, field_z, Kx, Ky, params: Acousticparameters, n_max: int, cropped: bool = False, **kwargs):
     c_n = calculate_cn_array(n_max, a, params)
     psi_n = calculate_psi_n_array(c_n)
     H_dict = calculate_Hnm(field_z, params, Kx, Ky, n_max)
@@ -200,6 +202,148 @@ def force_vs_radius(rads: np.ndarray, X, Y, field_z, Kx, Ky, params):
     plt.savefig(f"./test_result/forces_plot_comp.png")
     plt.show()    
 
+def calculate_gorkov(a, field_z, Kx, Ky, params):
+    rho = params.rho_medium
+    rho_sp = params.rho_sph
+    c_t = params.c_t
+    c_l = params.c_l
+    c = params.c_medium
+    k = params.k_medium
+    w = params.omega
+
+    #Eq. (67)
+    f1 = 1 - ((rho * c**2) / (rho_sp * c_l**2)) / (1 - (4 * c_t**2) / (3 * c_l**2))
+    #Eq. (68)
+    f2 = 2 * (rho_sp  - rho ) / (2 * rho_sp + rho)
+
+    p_mean_sq = 0.5 * np.abs(field_z)**2
+
+    S = np.fft.fft2(field_z)
+    mask =  Kx**2 + Ky**2 <= k**2
+    Kz = np.sqrt(np.where(mask, k**2 - (Kx**2 + Ky**2 ), 0))
+
+    #Eq. (5)
+    vx = np.fft.ifft2(Kx * S) / (w * rho)
+    vy = np.fft.ifft2(Ky * S) / (w * rho)
+    vz = np.fft.ifft2(Kz * S) / (w * rho)
+    v_mean_sq = 0.5 * (np.abs(vx)**2 + np.abs(vy)**2 + np.abs(vz)**2)
+
+    #Eq. (79)
+    U_gorkov = 2 * np.pi * a**3 * (f1 * p_mean_sq / (3 * rho * c**2) - f2 * rho * v_mean_sq / 2)
+    U_spec = np.fft.fft2(U_gorkov)
+
+    #Eq. (78)
+    Fx = - np.real(np.fft.ifft2(1j * Kx * U_spec))
+    Fy = - np.real(np.fft.ifft2(1j * Ky * U_spec))
+    Fz = - np.real(np.fft.ifft2(1j * Kz * U_spec))
+
+    return Fx, Fy, Fz, U_gorkov
+
+def sapozh_gorkov_comparison(rad, X, Y, field_z, Kx, Ky, params):
+    Nx = params.Nx
+    Ny = params.Ny
+    nx = params.nx
+    ny = params.ny
+    k = params.k_medium
+    start_x = (Nx - nx) // 2
+    start_y = (Ny - ny) // 2
+    sl1 = (slice(start_y, start_y + ny), slice(start_x, start_x + nx))
+
+    h1, h2 = 260, 330
+    v1, v2 = 120, 190
+    sl2 = (slice(h1, h2), slice(v1, v2))
+
+    Y *= -1
+    X_crop = X[sl1][sl2] * 1e3
+    Y_crop = Y[sl1][sl2] * 1e3
+    x_slice = X_crop[0, :]
+
+    Fx, Fy, Fz, U = calculate_gorkov(rad, field_z, Kx, Ky, params)
+    Fx, Fy, Fz, U = Fx[sl1][sl2], Fy[sl1][sl2], Fz[sl1][sl2], U[sl1][sl2]
+    Fy *= -1
+
+    Fx_slice = Fx[15, :]
+    Fy_slice = Fy[15, :]
+    F_slice = np.sqrt(Fx_slice**2 + Fy_slice**2)
+    plt.plot(x_slice, Fx_slice, ls= '-', c = "#243bec", ms = 8, label = r"$F_x^{(g)}$")
+    plt.plot(x_slice, F_slice, ls= '-', c = "#ec2424", ms = 8, label = r"$F^{(g)}$")
+    
+     
+    Fx, Fy, Fz = calculate_forces(rad, field_z, Kx, Ky, params, n_max=get_nmax(k, rad), cropped=True, sl1 = sl1, sl2 = sl2)
+    Fy *= -1
+
+    Fx_slice = Fx[15, :]
+    Fy_slice = Fy[15, :]
+    F_slice = np.sqrt(Fx_slice**2 + Fy_slice**2)
+    plt.plot(x_slice, Fx_slice, ls= '--', c = "#243bec", ms = 8, label = r"$F_x^{(s)}$")
+    plt.plot(x_slice, F_slice, ls= '--', c = "#ec2424", ms = 8, label = r"$F^{(s)}$")
+
+    plt.xlabel("x, mm")
+    plt.ylabel("F, N")
+    plt.legend()
+    plt.title(f"Forces in x-y direction (y = -3.5 mm, ka = {round(k * rad, 3)})")
+    plt.savefig(f"./test_result/forces_plot_gork_comp_{int(rad*1e6)}.png")
+    plt.show()
+
+def animate_particles(a, X, Y, field_z, Kx, Ky, params):
+    Nx = params.Nx
+    Ny = params.Ny
+    dx = params.dx
+    k = params.k_medium
+    start_x = (Nx - params.nx) // 2
+    start_y = (Ny - params.ny) // 2
+    sl1 = (slice(start_y, start_y + params.ny), slice(start_x, start_x + params.nx))
+
+    h1, h2 = 260, 330
+    v1, v2 = 120, 190
+    sl2 = (slice(h1, h2), slice(v1, v2))
+
+    X_crop = X[sl1][sl2]
+    Y_crop = - Y[sl1][sl2]
+    Amp_crop = np.abs(field_z)[sl1][sl2]
+    x_slice = X_crop[0, :]
+    y_slice = Y_crop[:, 0][::-1]
+
+    Fx, Fy, Fz = calculate_forces(a, field_z, Kx, Ky, params, n_max = get_nmax(k, a), cropped=True, sl1 = sl1, sl2 =sl2)
+    Fy *= -1
+    Fx = Fx[::-1, :]
+    Fy = Fy[::-1, :]
+
+    Fx_interpolator = RegularGridInterpolator((y_slice, x_slice), Fx, bounds_error=False, fill_value=0)
+    Fy_interpolator = RegularGridInterpolator((y_slice, x_slice), Fy, bounds_error=False, fill_value=0)
+
+    N_particles = 500
+    pos = np.zeros((N_particles, 2))
+    pos[:, 0] = np.random.uniform(np.min(x_slice), np.max(x_slice), N_particles)
+    pos[:, 1] = np.random.uniform(np.min(y_slice), np.max(y_slice), N_particles)
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    extent = [np.min(x_slice) * 1e3, np.max(x_slice) * 1e3, np.min(y_slice) * 1e3, np.max(y_slice) * 1e3]
+    im = ax.imshow(Amp_crop, cmap = 'jet', extent=extent, origin = 'upper', alpha=0.8)
+
+    scat = plt.scatter(pos[:, 0] * 1e3, pos[:, 1] * 1e3, c = 'white', edgecolors='black', s = 25, zorder = 5)
+
+    ax.set_xlabel("x, mm")
+    ax.set_ylabel("y, mm")
+
+    dt = 0.01 * (np.max(x_slice) - np.min(x_slice)) / np.max([np.max(np.abs(Fx)), np.max(np.abs(Fy))])
+
+    def update(frame):
+
+        points = np.column_stack((pos[:, 1], pos[:, 0]))
+
+        Fx_int = Fx_interpolator(points)
+        Fy_int = Fy_interpolator(points)
+
+        pos[:, 0] += Fx_int * dt
+        pos[:, 1] += Fy_int * dt
+
+        scat.set_offsets(pos * 1e3)
+        return scat, 
+    
+    ani = FuncAnimation(fig, update, frames = 100, interval = 10, blit = True)
+    ani.save('./test_result/trap_animation.gif', writer='pillow', fps=30)
 
 def main():
     params = Acousticparameters()
@@ -245,8 +389,9 @@ def main():
     plt.show()
     
     force_vs_radius([50e-6, 75e-6, 100e-6], X, Y, field_z, Kx, Ky, params)
-
-
+    sapozh_gorkov_comparison(1e-6, X, Y, field_z, Kx, Ky, params)
+    animate_particles(50e-6, X, Y, field_z, Kx, Ky, params)
+    
 if __name__ == "__main__":
     main()
 
